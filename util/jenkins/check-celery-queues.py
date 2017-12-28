@@ -2,8 +2,48 @@ import json
 import redis
 import click
 import boto3
-# TODO: Add backoff/retry
+import botocore
+import backoff
 
+max_tries = 5
+
+class redis_wrapper(object):
+    def __init__(self, *args, **kwargs):
+        self.redis = redis.StrictRedis(*args, **kwargs)
+    @backoff.on_exception(backoff.expo,
+            (redis.exceptions.TimeoutError, redis.exceptions.ConnectionError),
+            max_tries=max_tries)
+    def keys(self):
+        print("r.keys()")
+        return self.redis.keys()
+    @backoff.on_exception(backoff.expo,
+            (redis.exceptions.TimeoutError, redis.exceptions.ConnectionError),
+            max_tries=max_tries)
+    def type(self, key):
+        print("r.type({})".format(key))
+        return self.redis.type(key)
+    @backoff.on_exception(backoff.expo,
+            (redis.exceptions.TimeoutError, redis.exceptions.ConnectionError),
+            max_tries=max_tries)
+    def llen(self, key):
+        print("r.llen({})".format(key))
+        return self.redis.llen(key)
+
+class cw_boto_wrapper(object):
+    def __init__(self, *args, **kwargs):
+        self.cw = boto3.client('cloudwatch')
+    @backoff.on_exception(backoff.expo,
+            (botocore.exceptions.ClientError),
+            max_tries=max_tries)
+    def list_metrics(self, *args, **kwargs):
+        print("list_metrics()")
+        return self.cw.list_metrics(*args, **kwargs)
+    @backoff.on_exception(backoff.expo,
+            (botocore.exceptions.ClientError),
+            max_tries=max_tries)
+    def put_metric_data(self, *args, **kwargs):
+        print("put_metric_data()")
+        return self.cw.put_metric_data(*args, **kwargs)
 
 @click.command()
 @click.option('--host', '-h', default='localhost',
@@ -15,9 +55,10 @@ import boto3
 @click.option('--max-metrics', default=30,
               help='Maximum number of CloudWatch metrics to publish')
 def check_queues(host, port, environment, deploy, max_metrics):
+    timeout = 1
     namespace = "celery/{}-{}".format(environment, deploy)
-    r = redis.StrictRedis(host=host, port=port)
-    cw = boto3.client('cloudwatch')
+    r = redis_wrapper(host=host, port=port, socket_timeout=timeout, socket_connect_timeout=timeout)
+    cw = cw_boto_wrapper()
     metric_name = 'queue_length'
     dimension = 'queue'
     response = cw.list_metrics(Namespace=namespace, MetricName=metric_name,
